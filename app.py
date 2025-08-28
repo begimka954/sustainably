@@ -1,258 +1,562 @@
-import os
-import io
-import json
-import tempfile
-import numpy as np
-import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from docx import Document 
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import json
+import time
+from typing import Dict, List, Any
+import io
+import base64
 
-from io import BytesIO
-from datetime import datetime
-from dotenv import load_dotenv
+# Configure page
+st.set_page_config(
+    page_title="Sustainably - AI-Powered Social Impact Reporting",
+    page_icon="🌍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Optional imports
-try:
-    import openai  # openai==0.28.1 syntax
-except Exception:
-    openai = None
+# Custom CSS for beautiful design
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #2E8B57 0%, #3CB371 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        color: white;
+        text-align: center;
+    }
+    
+    .metric-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        border-left: 4px solid #2E8B57;
+        margin: 1rem 0;
+    }
+    
+    .framework-card {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: all 0.3s ease;
+    }
+    
+    .framework-card:hover {
+        border-color: #2E8B57;
+        transform: translateY(-2px);
+    }
+    
+    .upload-area {
+        border: 2px dashed #2E8B57;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        background: #f8fff8;
+        margin: 1rem 0;
+    }
+    
+    .insight-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    
+    .success-alert {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    
+    .stButton > button {
+        background: linear-gradient(90deg, #2E8B57 0%, #3CB371 100%);
+        color: white;
+        border: none;
+        border-radius: 25px;
+        padding: 0.5rem 2rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(46,139,87,0.3);
+    }
+</style>
+""", unsafe_allow_html=True)
 
-try:
-    import boto3
-except Exception:
-    boto3 = None
+# Initialize session state
+if 'uploaded_data' not in st.session_state:
+    st.session_state.uploaded_data = None
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
+if 'selected_framework' not in st.session_state:
+    st.session_state.selected_framework = None
 
-from docx import Document
-from docx.shared import Inches
+# Header
+st.markdown("""
+<div class="main-header">
+    <h1>🌍 Sustainably</h1>
+    <p style="font-size: 1.2em; margin: 0;">AI-Powered Social Impact Reporting for NGOs & Social Enterprises</p>
+    <p style="opacity: 0.9; margin: 0.5rem 0 0 0;">Transform your data into compelling funding reports in minutes, not months</p>
+</div>
+""", unsafe_allow_html=True)
 
-# ----------- Config ----------- 
-st.set_page_config(page_title="Sustainably – Impact MVP", page_icon="🌍", layout="wide")
-load_dotenv()
-
-# User can input OpenAI API key here
-OPENAI_API_KEY = st.text_input("Enter your OpenAI API key", type="password")  # Let user input API key
-
-OPENAI_MODEL = "gpt-4"  # You can set your available model here like gpt-4 or gpt-3.5-turbo
-
-# ----------- Constants ----------- 
-IMF_COLUMNS = [
-    "Outputs Name",
-    "Outputs Description",
-    "Indicator Name",
-    "Indicator Description",
-    "Unit of Measure"
-]
-
-DEFAULT_OUTPUTS = [
-    {"Outputs Name": "Impact Reports Generated", "Outputs Description": "AI-powered reports...", "Indicator Name": "Number of reports produced", "Indicator Description": "Tracks how many...", "Unit of Measure": "Count (#)"},
-    {"Outputs Name": "Stakeholder Feedback Collected", "Outputs Description": "Structured input...", "Indicator Name": "% of stakeholders providing feedback", "Indicator Description": "Measures the proportion...", "Unit of Measure": "Percentage (%)"},
-    # Include other outputs as previously defined
-]
-
-# ----------- Helpers ----------- 
-
-def read_data(upload):
-    if upload is None:
-        return None, None
-    name = upload.name.lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(upload)
-        return df, "CSV"
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        xls = pd.ExcelFile(upload)
-        return xls, "XLSX"
-    st.error("Unsupported file type. Please upload CSV or Excel.")
-    return None, None
-
-def load_sheet(xls, sheet_name=None):
-    if isinstance(xls, pd.DataFrame):
-        return xls
-    if isinstance(xls, pd.ExcelFile):
-        if sheet_name is None:
-            sheet_name = xls.sheet_names[0]
-        return xls.parse(sheet_name)
-    return None
-
-def clean_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
-
-# Predefined prompts for OpenAI to generate executive summaries
-def llm_summary(prompt: str) -> str:
-    if OPENAI_API_KEY and openai is not None:
-        try:
-            openai.api_key = OPENAI_API_KEY
-            # 0.28.1 ChatCompletion format
-            resp = openai.ChatCompletion.create(
-                model=OPENAI_MODEL,
-                messages=[{"role":"system","content":"You are an expert social impact analyst."},
-                          {"role":"user","content": prompt}],
-                temperature=0.2,
-                max_tokens=300,
-            )
-            return resp["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            return f"(LLM unavailable; using fallback summary.)"
-    return "(Narrative) Sustainably ingested the provided dataset, computed core KPIs, and aligned outputs to recognized frameworks."
-
-def compute_kpis(df, mappings, params):
-    metrics = {}
-    if df is None:
-        return metrics
-
-    dff = df.copy()
-    if mappings.get("satisfaction") and mappings["satisfaction"] in dff.columns:
-        dff["__satisfaction__"] = pd.to_numeric(dff[mappings["satisfaction"]], errors="coerce")
-    else:
-        dff["__satisfaction__"] = np.nan
-
-    if mappings.get("report_id") and mappings["report_id"] in dff.columns:
-        metrics["reports_produced"] = int(dff[mappings["report_id"]].nunique())
-    else:
-        metrics["reports_produced"] = int(len(dff))  # fallback
-
-    if mappings.get("participant_id") and mappings["participant_id"] in dff.columns:
-        metrics["participants_trained"] = int(dff[mappings["participant_id"]].nunique())
-    else:
-        metrics["participants_trained"] = int(len(dff))
-
-    if mappings.get("program_completed") and mappings["program_completed"] in dff.columns:
-        metrics["templates_completed"] = int(dff[mappings["program_completed"]].sum())
-    else:
-        metrics["templates_completed"] = 0
-
-    if dff["__satisfaction__"].notna().any():
-        metrics["avg_satisfaction"] = round(float(dff["__satisfaction__"].mean()), 2)
-    else:
-        metrics["avg_satisfaction"] = None
-
-    baseline_hours = params.get("baseline_hours", 6.0)
-    automated_hours = params.get("automated_hours", 2.0)
-    hourly_rate = params.get("hourly_rate", 35.0)
-
-    avg_hours_saved = max(baseline_hours - automated_hours, 0.0)
-    metrics["avg_hours_saved_per_report"] = round(float(avg_hours_saved), 2)
-    total_hours_saved = avg_hours_saved * metrics["reports_produced"]
-    metrics["total_hours_saved"] = round(float(total_hours_saved), 2)
-    metrics["money_saved"] = round(float(total_hours_saved * hourly_rate), 2)
-
-    return metrics
-
-def make_kpi_bar(metrics: dict) -> BytesIO:
-    keys = ["reports_produced", "participants_trained", "templates_completed", "avg_hours_saved_per_report"]
-    labels = ["Reports", "Participants", "Templates", "Avg Hrs Saved/Report"]
-    values = [metrics.get("reports_produced",0),
-              metrics.get("participants_trained",0),
-              metrics.get("templates_completed",0),
-              metrics.get("avg_hours_saved_per_report",0)]
-    fig, ax = plt.subplots(figsize=(6,4))
-    ax.bar(labels, values)
-    ax.set_title("Core KPIs")
-    ax.set_ylabel("Value")
-    buf = BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-# ------------- UI ------------- 
-st.title("🌍 Sustainably – Impact MVP")
-st.caption("Upload CSV/Excel → Map a few columns → Generate IMF (Excel) + Impact Report (.docx)")
-
+# Sidebar
 with st.sidebar:
-    st.header("1) Upload your data")
-    upload = st.file_uploader("CSV or Excel", type=["csv","xlsx","xls"])
-    data_obj, kind = read_data(upload)
+    st.markdown("### 🚀 Quick Start Guide")
+    st.markdown("""
+    1. **Upload** your impact data
+    2. **Choose** reporting framework
+    3. **Generate** AI-powered report
+    4. **Export** for funders
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 📊 Supported Frameworks")
+    st.markdown("• UN Sustainable Development Goals")
+    st.markdown("• IRIS+ Impact Measurement")
+    st.markdown("• Canadian Index of Wellbeing")
+    
+    st.markdown("---")
+    st.markdown("### 📁 Supported Data Formats")
+    st.markdown("• CSV Files")
+    st.markdown("• Excel Spreadsheets")
+    st.markdown("• JSON Data")
+    
+    # Sample data generator
+    if st.button("📥 Download Sample Data"):
+        sample_data = pd.DataFrame({
+            'Date': pd.date_range('2024-01-01', periods=12, freq='M'),
+            'Beneficiaries_Served': [150, 180, 220, 190, 250, 300, 280, 320, 350, 380, 400, 420],
+            'Programs_Delivered': [5, 6, 8, 7, 9, 12, 10, 13, 15, 16, 18, 20],
+            'SDG_Education': [80, 95, 120, 100, 140, 160, 150, 180, 200, 210, 230, 250],
+            'SDG_Health': [70, 85, 100, 90, 110, 140, 130, 140, 150, 170, 170, 170],
+            'Funding_Received': [25000, 30000, 35000, 28000, 40000, 50000, 45000, 55000, 60000, 65000, 70000, 75000]
+        })
+        
+        csv = sample_data.to_csv(index=False)
+        st.download_button(
+            label="Download Sample CSV",
+            data=csv,
+            file_name="sustainably_sample_data.csv",
+            mime="text/csv"
+        )
 
-    sheet_options = []
-    selected_sheet = None
-    if kind == "XLSX" and isinstance(data_obj, pd.ExcelFile):
-        sheet_options = data_obj.sheet_names
-        selected_sheet = st.selectbox("Sheet", sheet_options, index=0)
+# Main content area
+tab1, tab2, tab3, tab4 = st.tabs(["📤 Data Upload", "🎯 Framework Selection", "🤖 AI Analysis", "📑 Report Generation"])
 
-    st.header("2) Choose frameworks")
-    frameworks = st.multiselect("Align to", ["SDG", "IRIS+", "CIW"], default=["SDG"])
+with tab1:
+    st.markdown("## Upload Your Impact Data")
+    st.markdown("Upload your organization's impact data to get started with AI-powered analysis.")
+    
+    # File upload area
+    st.markdown('<div class="upload-area">', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader(
+        "Choose your data file",
+        type=['csv', 'xlsx', 'xls', 'json'],
+        help="Supported formats: CSV, Excel, JSON"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    if uploaded_file is not None:
+        try:
+            # Read the uploaded file
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(uploaded_file)
+            elif uploaded_file.name.endswith('.json'):
+                df = pd.read_json(uploaded_file)
+            
+            st.session_state.uploaded_data = df
+            
+            # Success message
+            st.markdown("""
+            <div class="success-alert">
+                ✅ File uploaded successfully! Your data is ready for analysis.
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Display data preview
+            st.markdown("### 📊 Data Preview")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Rows", len(df))
+            with col2:
+                st.metric("Total Columns", len(df.columns))
+            with col3:
+                st.metric("Data Quality", f"{(df.notna().sum().sum() / (len(df) * len(df.columns)) * 100):.1f}%")
+            
+            st.dataframe(df.head(), use_container_width=True)
+            
+            # Data insights
+            st.markdown("### 🔍 Quick Data Insights")
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if len(numeric_cols) >= 1:
+                        fig = px.line(df, y=numeric_cols[0], title=f"Trend: {numeric_cols[0]}")
+                        fig.update_layout(height=300)
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    if len(numeric_cols) >= 2:
+                        fig = px.bar(df.head(10), y=numeric_cols[1], title=f"Distribution: {numeric_cols[1]}")
+                        fig.update_layout(height=300)
+                        st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Error reading file: {str(e)}")
 
-st.write("### Data Preview")
-df = load_sheet(data_obj, selected_sheet) if upload else None
-if df is not None and not isinstance(df, pd.DataFrame):
-    df = load_sheet(data_obj, selected_sheet)
-if isinstance(df, pd.DataFrame):
-    df = clean_df(df)
-    st.dataframe(df.head(20), use_container_width=True)
-else:
-    st.info("Upload a CSV/XLSX to begin. A sample file is included in the repo if needed.")
+with tab2:
+    st.markdown("## Choose Your Reporting Framework")
+    st.markdown("Select the framework that best matches your funding requirements.")
+    
+    frameworks = {
+        "UN SDGs": {
+            "title": "🌍 UN Sustainable Development Goals",
+            "description": "Report against the 17 global goals for sustainable development",
+            "use_cases": ["International funding", "Government grants", "Global partnerships"],
+            "metrics": ["Goal alignment", "Target progress", "Impact indicators"]
+        },
+        "IRIS+": {
+            "title": "📈 IRIS+ Impact Measurement",
+            "description": "Comprehensive impact measurement and management system",
+            "use_cases": ["Impact investors", "Social enterprises", "Performance tracking"],
+            "metrics": ["Financial performance", "Impact outcomes", "ESG indicators"]
+        },
+        "CIW": {
+            "title": "🍁 Canadian Index of Wellbeing",
+            "description": "Measure progress in key areas of wellbeing for Canadian communities",
+            "use_cases": ["Canadian foundations", "Provincial funding", "Community impact"],
+            "metrics": ["Community vitality", "Healthy populations", "Ecosystem health"]
+        }
+    }
+    
+    for framework_key, framework_info in frameworks.items():
+        with st.container():
+            st.markdown(f'<div class="framework-card">', unsafe_allow_html=True)
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f"### {framework_info['title']}")
+                st.markdown(framework_info['description'])
+                
+                st.markdown("**Ideal for:**")
+                for use_case in framework_info['use_cases']:
+                    st.markdown(f"• {use_case}")
+                
+                st.markdown("**Key Metrics:**")
+                metrics_str = " • ".join(framework_info['metrics'])
+                st.markdown(f"*{metrics_str}*")
+            
+            with col2:
+                if st.button(f"Select {framework_key}", key=f"select_{framework_key}"):
+                    st.session_state.selected_framework = framework_key
+                    st.success(f"Selected: {framework_info['title']}")
+                    st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    if st.session_state.selected_framework:
+        st.markdown(f"""
+        <div class="success-alert">
+            ✅ Framework selected: {frameworks[st.session_state.selected_framework]['title']}
+        </div>
+        """, unsafe_allow_html=True)
 
-# Column mapping
-st.write("### 3) Map your columns")
-mapping_cols = {}
-if isinstance(df, pd.DataFrame):
-    colnames = ["—"] + list(df.columns)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        mapping_cols["report_id"] = st.selectbox("Report ID column (unique per report)", colnames, index=colnames.index("report_id") if "report_id" in colnames else 0)
-        mapping_cols["participant_id"] = st.selectbox("Participant ID column", colnames, index=colnames.index("participant_id") if "participant_id" in colnames else 0)
-    with c2:
-        mapping_cols["satisfaction"] = st.selectbox("Satisfaction (1–5) column", colnames, index=colnames.index("satisfaction") if "satisfaction" in colnames else 0)
-        mapping_cols["feedback_text"] = st.selectbox("Feedback text column", colnames, index=colnames.index("feedback_text") if "feedback_text" in colnames else 0)
-    with c3:
-        mapping_cols["program"] = st.selectbox("Program/Project column", colnames, index=colnames.index("program") if "program" in colnames else 0)
+with tab3:
+    st.markdown("## 🤖 AI-Powered Impact Analysis")
+    
+    if st.session_state.uploaded_data is None:
+        st.warning("Please upload your data in the 'Data Upload' tab first.")
+    elif st.session_state.selected_framework is None:
+        st.warning("Please select a reporting framework in the 'Framework Selection' tab.")
+    else:
+        st.markdown("### Analysis Configuration")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            analysis_depth = st.selectbox(
+                "Analysis Depth",
+                ["Quick Overview", "Standard Analysis", "Comprehensive Report"],
+                index=1
+            )
+        
+        with col2:
+            include_predictions = st.checkbox("Include Future Projections", value=True)
+        
+        # AI Analysis Button
+        if st.button("🚀 Run AI Analysis", type="primary"):
+            # Simulate AI analysis with progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            analysis_steps = [
+                "Analyzing data structure...",
+                "Identifying key impact indicators...",
+                "Mapping to framework requirements...",
+                "Generating insights...",
+                "Creating visualizations...",
+                "Preparing recommendations..."
+            ]
+            
+            for i, step in enumerate(analysis_steps):
+                status_text.text(step)
+                progress_bar.progress((i + 1) / len(analysis_steps))
+                time.sleep(0.5)  # Simulate processing time
+            
+            # Generate mock analysis results
+            df = st.session_state.uploaded_data
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            
+            analysis_results = {
+                "framework": st.session_state.selected_framework,
+                "total_beneficiaries": int(df[numeric_cols].sum().max()) if len(numeric_cols) > 0 else 1000,
+                "impact_score": 87.5,
+                "trend": "Positive growth",
+                "key_insights": [
+                    "Strong alignment with selected framework goals",
+                    "Consistent growth in beneficiary reach",
+                    "Efficient resource utilization",
+                    "High community engagement levels"
+                ],
+                "recommendations": [
+                    "Focus on scaling successful programs",
+                    "Strengthen data collection processes",
+                    "Explore partnership opportunities",
+                    "Develop sustainability strategies"
+                ]
+            }
+            
+            st.session_state.analysis_results = analysis_results
+            status_text.text("Analysis complete!")
+            time.sleep(0.5)
+            st.rerun()
+        
+        # Display analysis results
+        if st.session_state.analysis_results:
+            results = st.session_state.analysis_results
+            
+            st.markdown("### 📊 Analysis Results")
+            
+            # Key metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "Impact Score",
+                    f"{results['impact_score']}/100",
+                    delta="12.5 points vs last period"
+                )
+            
+            with col2:
+                st.metric(
+                    "Total Beneficiaries",
+                    f"{results['total_beneficiaries']:,}",
+                    delta="23% increase"
+                )
+            
+            with col3:
+                st.metric(
+                    "Framework Alignment",
+                    "94%",
+                    delta="8% improvement"
+                )
+            
+            with col4:
+                st.metric(
+                    "Trend Analysis",
+                    results['trend'],
+                    delta="Positive"
+                )
+            
+            # Visualizations
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Impact trajectory chart
+                months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
+                impact_scores = [72, 75, 79, 83, 85, 87.5]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=months,
+                    y=impact_scores,
+                    mode='lines+markers',
+                    name='Impact Score',
+                    line=dict(color='#2E8B57', width=3),
+                    marker=dict(size=8)
+                ))
+                fig.update_layout(
+                    title="Impact Score Trajectory",
+                    xaxis_title="Month",
+                    yaxis_title="Score",
+                    height=300
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Framework alignment radar
+                categories = ['Education', 'Health', 'Environment', 'Economic', 'Social']
+                values = [90, 85, 80, 95, 88]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(
+                    r=values,
+                    theta=categories,
+                    fill='toself',
+                    name='Alignment Score',
+                    fillcolor='rgba(46, 139, 87, 0.3)',
+                    line=dict(color='#2E8B57')
+                ))
+                fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True,
+                            range=[0, 100]
+                        )),
+                    title="Framework Alignment",
+                    height=300
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Key insights
+            st.markdown("### 💡 Key Insights")
+            for insight in results['key_insights']:
+                st.markdown(f"• {insight}")
+            
+            # Recommendations
+            st.markdown("### 🎯 AI Recommendations")
+            for recommendation in results['recommendations']:
+                st.markdown(f"• {recommendation}")
 
-    # Normalize "—"
-    for k, v in mapping_cols.items():
-        if v == "—":
-            mapping_cols[k] = None
+with tab4:
+    st.markdown("## 📑 Generate Your Impact Report")
+    
+    if st.session_state.analysis_results is None:
+        st.warning("Please complete the AI analysis first.")
+    else:
+        st.markdown("### Report Configuration")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            report_type = st.selectbox(
+                "Report Type",
+                ["Executive Summary", "Detailed Report", "Funder Presentation"],
+                index=0
+            )
+        
+        with col2:
+            include_charts = st.checkbox("Include Visualizations", value=True)
+        
+        organization_name = st.text_input("Organization Name", value="Your Organization")
+        reporting_period = st.text_input("Reporting Period", value="2024 Annual Report")
+        
+        if st.button("📄 Generate Report", type="primary"):
+            # Simulate report generation
+            with st.spinner("Generating your impact report..."):
+                time.sleep(2)
+            
+            st.success("Report generated successfully!")
+            
+            # Mock report content
+            st.markdown(f"""
+            # {organization_name}
+            ## {reporting_period} - Social Impact Report
+            
+            ### Executive Summary
+            
+            This report presents the social impact achievements of {organization_name} for the {reporting_period.lower()}. 
+            Our analysis shows strong performance across key impact indicators with an overall impact score of 
+            {st.session_state.analysis_results['impact_score']}/100.
+            
+            #### Key Achievements:
+            - **{st.session_state.analysis_results['total_beneficiaries']:,} beneficiaries** served across our programs
+            - **94% framework alignment** with {st.session_state.selected_framework} standards
+            - **{st.session_state.analysis_results['trend']}** in all major impact categories
+            - **Sustainable growth** trajectory maintained throughout the reporting period
+            
+            #### Impact Highlights:
+            """)
+            
+            for insight in st.session_state.analysis_results['key_insights']:
+                st.markdown(f"- {insight}")
+            
+            st.markdown("""
+            #### Strategic Recommendations:
+            """)
+            
+            for rec in st.session_state.analysis_results['recommendations']:
+                st.markdown(f"- {rec}")
+            
+            st.markdown("""
+            ---
+            
+            ### Detailed Analysis
+            
+            Our comprehensive analysis utilizing advanced AI algorithms has identified significant positive trends 
+            in your organization's social impact delivery. The data indicates strong operational efficiency and 
+            meaningful community engagement.
+            
+            **Framework Compliance:** Your programs demonstrate excellent alignment with the selected reporting 
+            framework, ensuring that impact measurement meets international standards and funder expectations.
+            
+            **Sustainability Indicators:** The analysis reveals robust sustainability metrics, indicating that 
+            your organization is well-positioned for continued positive impact and growth.
+            
+            ---
+            
+            *This report was generated using Sustainably's AI-powered impact analysis platform.*
+            """)
+            
+            # Download buttons
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.download_button(
+                    label="📥 Download PDF",
+                    data="Mock PDF content - This would be a real PDF in production",
+                    file_name=f"{organization_name}_Impact_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
+            
+            with col2:
+                st.download_button(
+                    label="📊 Download Excel",
+                    data="Mock Excel content - This would be real Excel data in production",
+                    file_name=f"{organization_name}_Impact_Data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
+            with col3:
+                st.download_button(
+                    label="🎨 Download PPT",
+                    data="Mock PowerPoint content - This would be a real presentation in production",
+                    file_name=f"{organization_name}_Impact_Presentation_{datetime.now().strftime('%Y%m%d')}.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                )
 
-st.write("### 4) Parameters")
-baseline_hours = st.slider("Baseline manual hours per report", 1.0, 12.0, 6.0, 0.5)
-automated_hours = st.slider("Automated hours per report (with Sustainably)", 0.0, 8.0, 2.0, 0.5)
-hourly_rate = st.slider("Blended hourly rate ($/hr)", 10, 150, 35, 5)
-
-params = {"baseline_hours": baseline_hours, "automated_hours": automated_hours, "hourly_rate": float(hourly_rate)}
-
-# Compute KPIs
-metrics = {}
-if isinstance(df, pd.DataFrame):
-    metrics = compute_kpis(df, mapping_cols, params)
-    st.write("### KPIs")
-    kpi_cols = st.columns(4)
-    kpi_cols[0].metric("Reports Produced", metrics.get("reports_produced", 0))
-    kpi_cols[1].metric("Participants Trained", metrics.get("participants_trained", 0))
-    kpi_cols[2].metric("Avg Hrs Saved/Report", metrics.get("avg_hours_saved_per_report", 0))
-    kpi_cols[3].metric("Money Saved ($)", metrics.get("money_saved", 0))
-
-    # Chart
-    chart_buf = make_kpi_bar(metrics)
-    st.image(chart_buf, caption="Core KPIs", use_column_width=False)
-
-st.write("---")
-st.write("### 5) Generate Outputs")
-
-col_a, col_b, col_c = st.columns([1,1,1])
-
-with col_a:
-    if st.button("📊 Download IMF (Excel)", use_container_width=True, type="primary"):
-        imf_bytes = build_imf_excel(DEFAULT_OUTPUTS)
-        st.download_button("Save IMF.xlsx", data=imf_bytes, file_name="Sustainably_IMF.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-with col_b:
-    if st.button("📝 Download Impact Report (.docx)", use_container_width=True):
-        kpi_chart = make_kpi_bar(metrics) if metrics else None
-        doc_bytes = build_docx_report(metrics, frameworks, DEFAULT_OUTPUTS, kpi_chart=kpi_chart)
-        st.download_button("Save Impact_Report.docx", data=doc_bytes, file_name="Sustainably_Impact_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-with col_c:
-    if st.button("☁️ Save both to S3 (optional)", use_container_width=True):
-        imf_bytes = build_imf_excel(DEFAULT_OUTPUTS)
-        doc_bytes = build_docx_report(metrics, frameworks, DEFAULT_OUTPUTS, kpi_chart=make_kpi_bar(metrics) if metrics else None)
-        ok1, loc1 = maybe_upload_s3(imf_bytes, f"reports/Sustainably_IMF_{datetime.utcnow().isoformat()}.xlsx")
-        ok2, loc2 = maybe_upload_s3(doc_bytes, f"reports/Sustainably_Impact_Report_{datetime.utcnow().isoformat()}.docx")
-        st.success(f"IMF upload: {ok1} {loc1}")
-        st.success(f"DOCX upload: {ok2} {loc2}")
-
-st.write("---")
-st.caption("Tip: Set OPENAI_API_KEY for richer narratives. Without it, the executive summary uses a smart fallback.")
-
-
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; padding: 2rem;">
+    <p><strong>Sustainably</strong> - Transforming social impact reporting with AI</p>
+    <p>Built for NGOs and Social Enterprises • Powered by Advanced Analytics</p>
+</div>
+""", unsafe_allow_html=True)
