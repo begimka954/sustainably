@@ -13,6 +13,15 @@ from dotenv import load_dotenv
 import openai
 from openai import OpenAI
 
+
+# Configure page
+st.set_page_config(
+    page_title="Sustainably - AI-Powered Social Impact Reporting",
+    page_icon="🌍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # Load environment variables
 load_dotenv()
 
@@ -33,13 +42,7 @@ except Exception as e:
     st.session_state.openai_available = False
     st.warning(f"⚠️ OpenAI API initialization failed. Using simulation mode. Error: {str(e)}")
 
-# Configure page
-st.set_page_config(
-    page_title="Sustainably - AI-Powered Social Impact Reporting",
-    page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+
 
 # Custom CSS for beautiful design
 st.markdown("""
