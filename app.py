@@ -11,7 +11,7 @@ import base64
 import os
 from dotenv import load_dotenv
 import openai
-from openai import OpenAI
+
 
 
 # Configure page
@@ -26,13 +26,12 @@ st.set_page_config(
 load_dotenv()
 
 # Configure OpenAI
-client = None
 openai_available = False
 
 try:
     api_key = os.getenv('OPENAI_API_KEY')
     if api_key:
-        client = OpenAI(api_key=api_key)
+        openai.api_key = api_key
         openai_available = True
         st.session_state.openai_available = True
     else:
@@ -137,11 +136,11 @@ st.markdown("""
 def check_openai_credits():
     """Check if OpenAI API is available and has credits"""
     try:
-        if not client:
+        if not openai.api_key:
             return False
         
         # Make a minimal test request to check if API is working
-        response = client.chat.completions.create(
+        response = openai.Completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "test"}],
             max_tokens=1
@@ -160,7 +159,7 @@ def check_openai_credits():
 def analyze_data_with_openai(data, framework):
     """Analyze data using OpenAI API with fallback to simulation"""
     try:
-        if not client or not check_openai_credits():
+        if not openai.api_key or not check_openai_credits():
             return simulate_analysis(data, framework)
         
         # Prepare data summary for OpenAI
@@ -193,8 +192,8 @@ def analyze_data_with_openai(data, framework):
         Respond in JSON format with keys: impact_score, trend, insights, recommendations, alignment_score
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4-turbo-preview",
+        response = openai.api_key.Completions.create(
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000,
             temperature=0.7
@@ -249,7 +248,7 @@ def simulate_analysis(data, framework, ai_powered=False):
 def generate_report_with_openai(analysis_results, org_name, period, report_type):
     """Generate report content using OpenAI API with fallback"""
     try:
-        if not client or not check_openai_credits():
+        if not openai.api_key or not check_openai_credits():
             return generate_simulated_report(analysis_results, org_name, period, report_type)
         
         prompt = f"""
@@ -275,8 +274,8 @@ def generate_report_with_openai(analysis_results, org_name, period, report_type)
         Make it professional, data-driven, and suitable for funders.
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4-turbo-preview",
+        response = openai.api_key.Completions.create(
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
             temperature=0.7
