@@ -28,7 +28,7 @@ client = None
 openai_available = False
 
 try:
-    api_key = os.getenv('OPENAI_API_KEY')
+    api_key = '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'
     if api_key:
         client = OpenAI(api_key=api_key)
         openai_available = True
