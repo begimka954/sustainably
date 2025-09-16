@@ -28,7 +28,7 @@ client = None
 openai_available = False
 
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
+    api_key = st.secrets.get["OPENAI_API_KEY"]
     if api_key:
         client = OpenAI(api_key=api_key)
         openai_available = True
